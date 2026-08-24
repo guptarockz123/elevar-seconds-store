@@ -70,18 +70,17 @@
         import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Environment variables provided by the platform
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'qr-store-app';
         let firebaseConfig = {};
         
         try {
              firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-                apiKey: "AIzaSyBg8ts-YX_xh5V3QuXbHqQSWf7_apXK8DU",
-                authDomain: "elevar-seconds.firebaseapp.com",
-                projectId: "elevar-seconds",
-                storageBucket: "elevar-seconds.firebasestorage.app",
-                messagingSenderId: "1085584715429",
-                appId: "1:1085584715429:web:fc9c5a54e82eaf65ede74c"
+                apiKey: "dummy",
+                authDomain: "dummy",
+                projectId: "dummy",
+                storageBucket: "dummy",
+                messagingSenderId: "dummy",
+                appId: "dummy"
             };
         } catch(e) {
             console.warn("Could not parse firebase config, using dummy data");
@@ -94,10 +93,16 @@
 
         const getProductsCollection = () => collection(db, 'artifacts', appId, 'public', 'data', 'products');
         const getProductDoc = (id) => doc(db, 'artifacts', appId, 'public', 'data', 'products', id);
+        
+        // NEW: Orders Collection setup
+        const getOrdersCollection = () => collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+        const getOrderDoc = (id) => doc(db, 'artifacts', appId, 'public', 'data', 'orders', id);
+        
         const getSettingsDoc = () => doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
 
         let products = [];
         let cart = [];
+        let orders = []; // NEW: State to hold orders
         let globalQrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=pay_to_elevar_seconds";
 
         const storeSection = document.getElementById('store-section');
@@ -110,7 +115,8 @@
         const cartCountEl = document.getElementById('cart-count');
         const checkoutForm = document.getElementById('checkout-form');
         const adminProductList = document.getElementById('admin-product-list');
-        const addProductForm = document.getElementById('add-product-form');     
+        const addProductForm = document.getElementById('add-product-form');
+        const adminOrdersList = document.getElementById('admin-orders-list'); // NEW
         
         async function initAuth() {
             try {
@@ -138,8 +144,19 @@
                      seedInitialData();
                 } else {
                     renderStore();
-                    renderAdminList();
+                    if(isAdminLoggedIn) renderAdminList();
                     updateCartUI(); 
+                }
+            });
+
+            // NEW: Listen for Orders real-time
+            onSnapshot(getOrdersCollection(), (snapshot) => {
+                orders = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                // Sort by newest first
+                orders.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                
+                if (isAdminLoggedIn) {
+                    renderAdminOrders();
                 }
             });
 
@@ -281,7 +298,7 @@
                             <h4 class="text-sm font-black text-black uppercase tracking-wide leading-tight">${item.name}</h4>
                             <div class="text-sm font-bold text-gray-500 mt-1">₹${Number(item.price).toFixed(2)}</div>
                         </div>
-                        <div class="flex items-center border border-gray-200">
+                        <div class="flex items-center border border-gray-200 shrink-0">
                             <button onclick="updateCartItemQty('${item.id}', -1)" class="w-8 h-8 flex items-center justify-center text-black hover:bg-gray-100 transition-colors"><i class="fas fa-minus text-xs"></i></button>
                             <span class="w-8 text-center text-sm font-black">${item.qty}</span>
                             <button onclick="updateCartItemQty('${item.id}', 1)" class="w-8 h-8 flex items-center justify-center text-black hover:bg-gray-100 transition-colors"><i class="fas fa-plus text-xs"></i></button>
@@ -335,15 +352,18 @@
             }
 
             const name = document.getElementById('customer-name').value;
+            const email = document.getElementById('customer-email').value; // NEW
+            const phone = document.getElementById('customer-phone').value; // NEW
             const address = document.getElementById('customer-address').value;
             const submitBtn = document.getElementById('place-order-btn');
 
-            if (!name || !address) return;
+            if (!name || !address || !email || !phone) return;
 
             submitBtn.disabled = true;
             submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> PROCESSING...';
 
             try {
+                // 1. Deduct Stock
                 for (const item of cart) {
                     const productRef = getProductDoc(item.id);
                     const liveProduct = products.find(p => p.id === item.id);
@@ -357,6 +377,28 @@
                 }
 
                 const total = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+                
+                // 2. Save Order to Database (NEW)
+                const orderData = {
+                    customerName: name,
+                    customerEmail: email,
+                    customerPhone: phone,
+                    customerAddress: address,
+                    items: cart.map(item => ({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        qty: item.qty
+                    })),
+                    total: total,
+                    timestamp: Date.now(),
+                    status: 'Pending Payment'
+                };
+                
+                const newOrderRef = doc(getOrdersCollection());
+                await setDoc(newOrderRef, orderData);
+
+                // 3. Show Payment Screen
                 document.getElementById('payment-amount').textContent = `₹${total.toFixed(2)}`;
                 document.getElementById('qr-code-image').src = globalQrUrl;
 
@@ -398,7 +440,6 @@
 
         window.checkAdminPassword = () => {
             const pwd = document.getElementById('admin-password').value;
-            // The password gets injected securely by Streamlit before serving
             const expectedPassword = '__INJECTED_ADMIN_PASSWORD__'; 
             
             if (pwd === expectedPassword) { 
@@ -414,6 +455,7 @@
             storeSection.classList.add('hidden');
             adminSection.classList.remove('hidden');
             renderAdminList();
+            renderAdminOrders(); // NEW
             document.getElementById('admin-qr-url').value = globalQrUrl;
         }
 
@@ -460,6 +502,44 @@
             });
         }
 
+        // NEW: Render Orders in Admin Panel
+        function renderAdminOrders() {
+            adminOrdersList.innerHTML = '';
+            
+            if (orders.length === 0) {
+                 adminOrdersList.innerHTML = `<tr><td colspan="4" class="px-6 py-4 text-center text-xs font-bold uppercase tracking-wider text-gray-400">No recent orders.</td></tr>`;
+                 return;
+            }
+
+            orders.forEach(order => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50 border-b border-gray-100";
+                
+                const date = new Date(order.timestamp).toLocaleString();
+                const itemsStr = order.items.map(i => `${i.qty}x ${i.name}`).join('<br>');
+                
+                tr.innerHTML = `
+                    <td class="px-6 py-4">
+                        <div class="text-[10px] font-bold text-gray-400 mb-1 tracking-wider">${date}</div>
+                        <div class="text-xs font-black text-black uppercase tracking-wide leading-relaxed">${itemsStr}</div>
+                    </td>
+                    <td class="px-6 py-4">
+                        <div class="text-xs font-black text-black uppercase tracking-wide">${order.customerName}</div>
+                        <div class="text-[11px] font-bold text-gray-500 mt-1"><i class="fas fa-phone mr-1"></i> ${order.customerPhone}</div>
+                        <div class="text-[11px] font-bold text-gray-500 mt-1"><i class="fas fa-envelope mr-1"></i> ${order.customerEmail}</div>
+                        <div class="text-[11px] font-bold text-gray-400 mt-2 max-w-xs leading-relaxed"><i class="fas fa-map-marker-alt mr-1"></i> ${order.customerAddress}</div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-bold text-black">₹${Number(order.total).toFixed(2)}</div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button onclick="deleteOrder('${order.id}')" class="text-red-600 hover:text-red-800 font-bold uppercase tracking-wider text-xs"><i class="fas fa-trash mr-1"></i> Delete</button>
+                    </td>
+                `;
+                adminOrdersList.appendChild(tr);
+            });
+        }
+
         window.updateStock = async (id) => {
             if(!user) return;
             const input = document.getElementById(`stock-${id}`);
@@ -483,6 +563,20 @@
                      const docRef = getProductDoc(id);
                      await deleteDoc(docRef);
                      showToast("Product Deleted", "success");
+                 } catch(e) {
+                      showToast("Delete Failed", "error");
+                 }
+             }
+        }
+
+        // NEW: Delete Order Function
+        window.deleteOrder = async (id) => {
+             if(!user) return;
+             if(confirm("DELETE ORDER: Are you sure? This action cannot be undone.")) {
+                 try {
+                     const docRef = getOrderDoc(id);
+                     await deleteDoc(docRef);
+                     showToast("Order Removed", "success");
                  } catch(e) {
                       showToast("Delete Failed", "error");
                  }
@@ -652,16 +746,21 @@
                     </div>
                 </div>
 
-                <!-- Inventory Management -->
-                <div class="lg:col-span-2">
+                <!-- Inventory & Orders Management -->
+                <div class="lg:col-span-2 space-y-8">
+                    
+                    <!-- Inventory List -->
                     <div class="bg-white border border-gray-200 shadow-sm overflow-hidden">
+                        <div class="px-6 py-4 bg-black border-b border-black">
+                            <h2 class="text-xs font-black text-white uppercase tracking-widest">Inventory Management</h2>
+                        </div>
                         <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-black">
+                            <thead class="bg-gray-50">
                                 <tr>
-                                    <th scope="col" class="px-6 py-4 text-left text-xs font-black text-white uppercase tracking-widest">Product</th>
-                                    <th scope="col" class="px-6 py-4 text-left text-xs font-black text-white uppercase tracking-widest">Price</th>
-                                    <th scope="col" class="px-6 py-4 text-left text-xs font-black text-white uppercase tracking-widest">Stock</th>
-                                    <th scope="col" class="px-6 py-4 text-right text-xs font-black text-white uppercase tracking-widest">Actions</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-[10px] font-black text-gray-500 uppercase tracking-widest">Product</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-[10px] font-black text-gray-500 uppercase tracking-widest">Price</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-[10px] font-black text-gray-500 uppercase tracking-widest">Stock</th>
+                                    <th scope="col" class="px-6 py-4 text-right text-[10px] font-black text-gray-500 uppercase tracking-widest">Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="admin-product-list" class="bg-white divide-y divide-gray-200">
@@ -669,6 +768,27 @@
                             </tbody>
                         </table>
                     </div>
+
+                    <!-- NEW: Orders List -->
+                    <div class="bg-white border border-gray-200 shadow-sm overflow-hidden mt-8">
+                         <div class="px-6 py-4 bg-black border-b border-black">
+                            <h2 class="text-xs font-black text-white uppercase tracking-widest">Customer Orders</h2>
+                        </div>
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th scope="col" class="px-6 py-4 text-left text-[10px] font-black text-gray-500 uppercase tracking-widest">Order Summary</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-[10px] font-black text-gray-500 uppercase tracking-widest">Customer Details</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-[10px] font-black text-gray-500 uppercase tracking-widest">Total</th>
+                                    <th scope="col" class="px-6 py-4 text-right text-[10px] font-black text-gray-500 uppercase tracking-widest">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="admin-orders-list" class="bg-white divide-y divide-gray-200">
+                                <!-- Orders rendered here -->
+                            </tbody>
+                        </table>
+                    </div>
+
                 </div>
             </div>
         </div>
@@ -681,50 +801,69 @@
     <div id="cart-sidebar" class="fixed inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl z-50 flex flex-col slide-in-right">
         
         <!-- Cart Header -->
-        <div class="px-6 py-6 border-b border-gray-200 flex items-center justify-between bg-white">
+        <div class="px-6 py-6 border-b border-gray-200 flex items-center justify-between bg-white shrink-0">
             <h2 class="text-xl font-black text-black tracking-widest uppercase">Your Cart</h2>
             <button onclick="closeCart()" class="text-black hover:text-gray-500 transition-colors">
                 <i class="fas fa-times text-2xl"></i>
             </button>
         </div>
 
-        <div class="flex-1 overflow-y-auto relative p-6 bg-gray-50">
+        <!-- Main Cart Area -->
+        <div class="flex-1 overflow-hidden relative p-6 bg-gray-50 flex flex-col">
+            
             <!-- View 1: Cart Items -->
-            <div id="cart-contents-view" class="h-full flex flex-col">
+            <div id="cart-contents-view" class="h-full flex flex-col flex-1">
                 <div id="cart-items" class="flex-1 overflow-y-auto pr-2 pb-4">
                     <!-- Items injected here -->
                 </div>
                 
-                <div id="checkout-btn-container" class="mt-auto border-t border-gray-200 pt-6 hidden">
+                <div id="checkout-btn-container" class="shrink-0 mt-auto border-t border-gray-200 pt-6 hidden bg-gray-50">
                     <div class="flex justify-between text-lg font-black text-black mb-6 uppercase tracking-widest">
                         <p>Total</p>
                         <p id="cart-total">₹0.00</p>
                     </div>
-                    <button onclick="startCheckout()" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                    <button onclick="startCheckout()" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors shadow-lg">
                         Proceed to Checkout
                     </button>
                 </div>
             </div>
 
             <!-- View 2: Checkout Form -->
-            <div id="checkout-form-view" class="hidden h-full flex flex-col">
-                <button onclick="cancelCheckout()" class="text-xs font-bold text-gray-500 hover:text-black uppercase tracking-wider mb-6 flex items-center gap-2"><i class="fas fa-arrow-left"></i> Back to Cart</button>
+            <div id="checkout-form-view" class="hidden h-full flex flex-col flex-1">
+                <div class="shrink-0 mb-6">
+                    <button onclick="cancelCheckout()" class="text-xs font-bold text-gray-500 hover:text-black uppercase tracking-wider flex items-center gap-2"><i class="fas fa-arrow-left"></i> Back to Cart</button>
+                </div>
                 
-                <h3 class="text-2xl font-black text-black uppercase tracking-widest mb-2">Reservation</h3>
-                <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-8 leading-relaxed">Enter details to reserve items and reveal payment QR. Stock will be held temporarily.</p>
+                <div class="shrink-0 mb-4">
+                    <h3 class="text-2xl font-black text-black uppercase tracking-widest mb-2">Reservation</h3>
+                    <p class="text-xs font-bold text-gray-500 uppercase tracking-wider leading-relaxed">Enter details to reserve items and reveal payment QR.</p>
+                </div>
                 
-                <form id="checkout-form" class="space-y-6 flex-1">
+                <form id="checkout-form" class="space-y-6 flex-1 overflow-y-auto pr-2">
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Full Name</label>
                         <input type="text" id="customer-name" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
                     </div>
+                    
+                    <!-- NEW: Email & Phone fields -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Email</label>
+                            <input type="email" id="customer-email" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Phone</label>
+                            <input type="tel" id="customer-phone" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                        </div>
+                    </div>
+
                     <div>
                         <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Delivery Address</label>
-                        <textarea id="customer-address" rows="4" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black"></textarea>
+                        <textarea id="customer-address" rows="3" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black"></textarea>
                     </div>
                     
-                    <div class="pt-6">
-                        <button type="submit" id="place-order-btn" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                    <div class="pt-6 shrink-0 mt-auto">
+                        <button type="submit" id="place-order-btn" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors shadow-lg">
                             Place Order & Get QR
                         </button>
                     </div>
@@ -732,7 +871,7 @@
             </div>
 
             <!-- View 3: Payment -->
-            <div id="payment-view" class="hidden h-full flex flex-col items-center justify-center text-center">
+            <div id="payment-view" class="hidden h-full flex flex-col items-center justify-center text-center overflow-y-auto">
                 <div class="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mb-6 text-green-600 text-3xl">
                     <i class="fas fa-check"></i>
                 </div>
