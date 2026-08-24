@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Elevar Seconds</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap');
+        
+        /* Custom styles for sharp, athletic minimal look */
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: #ffffff;
+            color: #000000;
+        }
+        .slide-in-right {
+            transform: translateX(100%);
+            transition: transform 0.3s ease-in-out;
+        }
+        .slide-in-right.active {
+            transform: translateX(0);
+        }
+        .fade-in {
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+            pointer-events: none;
+        }
+        .fade-in.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        /* Hidden secret trigger */
+        #secret-trigger {
+            position: fixed;
+            bottom: 0;
+            right: 0;
+            width: 30px;
+            height: 30px;
+            cursor: default;
+            z-index: 10;
+        }
+        .product-image {
+            width: 100%;
+            height: 250px;
+            object-fit: cover;
+            background-color: #f3f4f6;
+        }
+        /* Hide scrollbar for cleaner UI */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #d1d5db; 
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #9ca3af; 
+        }
+    </style>
+</head>
+<body class="antialiased min-h-screen flex flex-col relative">
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Environment variables provided by the platform
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'qr-store-app';
+        let firebaseConfig = {};
+        
+        try {
+             firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+                apiKey: "AIzaSyBg8ts-YX_xh5V3QuXbHqQSWf7_apXK8DU",
+                authDomain: "elevar-seconds.firebaseapp.com",
+                projectId: "elevar-seconds",
+                storageBucket: "elevar-seconds.firebasestorage.app",
+                messagingSenderId: "1085584715429",
+                appId: "1:1085584715429:web:fc9c5a54e82eaf65ede74c"
+            };
+        } catch(e) {
+            console.warn("Could not parse firebase config, using dummy data");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        let user = null;
+
+        const getProductsCollection = () => collection(db, 'artifacts', appId, 'public', 'data', 'products');
+        const getProductDoc = (id) => doc(db, 'artifacts', appId, 'public', 'data', 'products', id);
+        const getSettingsDoc = () => doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+
+        let products = [];
+        let cart = [];
+        let globalQrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=pay_to_elevar_seconds";
+
+        const storeSection = document.getElementById('store-section');
+        const adminSection = document.getElementById('admin-section');
+        const productGrid = document.getElementById('product-grid');
+        const cartSidebar = document.getElementById('cart-sidebar');
+        const cartOverlay = document.getElementById('cart-overlay');
+        const cartItemsContainer = document.getElementById('cart-items');
+        const cartTotalEl = document.getElementById('cart-total');
+        const cartCountEl = document.getElementById('cart-count');
+        const checkoutForm = document.getElementById('checkout-form');
+        
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined') {
+                    const userCredential = await signInWithCustomToken(auth, __initial_auth_token);
+                    user = userCredential.user;
+                } else {
+                    const userCredential = await signInAnonymously(auth);
+                    user = userCredential.user;
+                }
+                setupRealtimeListener();
+            } catch (error) {
+                console.error("Auth error:", error);
+                showToast("Failed to connect to database.", "error");
+            }
+        }
+
+        function setupRealtimeListener() {
+            if (!user) return;
+            
+            onSnapshot(getProductsCollection(), (snapshot) => {
+                products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                
+                if (products.length === 0 && snapshot.metadata.fromCache === false) {
+                     seedInitialData();
+                } else {
+                    renderStore();
+                    renderAdminList();
+                    updateCartUI(); 
+                }
+            });
+
+            onSnapshot(getSettingsDoc(), (docSnapshot) => {
+                if (docSnapshot.exists()) {
+                    const data = docSnapshot.data();
+                    if (data.qrUrl) {
+                        globalQrUrl = data.qrUrl;
+                        const qrInput = document.getElementById('admin-qr-url');
+                        if(qrInput) qrInput.value = globalQrUrl;
+                    }
+                }
+            });
+        }
+
+        async function seedInitialData() {
+             const dummyProducts = [
+                { name: "Elevar ARC Racer - Blemish", price: 2490, stock: 5, image: "https://placehold.co/400x300/111111/ffffff?text=ARC+RACER" },
+                { name: "Hyperflo - Refurbished", price: 1490, stock: 8, image: "https://placehold.co/400x300/222222/ffffff?text=HYPERFLO" },
+                { name: "Aerochill Shorts - Minor Defect", price: 699, stock: 12, image: "https://placehold.co/400x300/333333/ffffff?text=AEROCHILL+SHORTS" }
+            ];
+            
+            for (const item of dummyProducts) {
+                const newDocRef = doc(getProductsCollection());
+                await setDoc(newDocRef, item);
+            }
+        }
+
+        function renderStore() {
+            productGrid.innerHTML = '';
+            
+            if (products.length === 0) {
+                 productGrid.innerHTML = `<p class="col-span-full text-center text-gray-500 py-10 uppercase tracking-wider text-sm font-bold">No products available at the moment.</p>`;
+                 return;
+            }
+
+            products.forEach(product => {
+                const outOfStock = product.stock <= 0;
+                const cartItem = cart.find(i => i.id === product.id);
+                const cartQty = cartItem ? cartItem.qty : 0;
+                const canAddMore = product.stock - cartQty > 0;
+
+                const card = document.createElement('div');
+                card.className = `bg-white border border-gray-200 overflow-hidden flex flex-col transition-all hover:border-black ${outOfStock ? 'opacity-50 grayscale' : ''}`;
+                card.innerHTML = `
+                    <div class="relative bg-gray-50">
+                        <img src="${product.image || 'https://placehold.co/400x300/eeeeee/999999?text=NO+IMAGE'}" alt="${product.name}" class="product-image">
+                        ${outOfStock ? `<div class="absolute inset-0 bg-black bg-opacity-10 flex items-center justify-center"><span class="bg-black text-white font-black px-4 py-2 text-sm uppercase tracking-widest">OUT OF STOCK</span></div>` : ''}
+                    </div>
+                    <div class="p-5 flex-grow flex flex-col">
+                        <h3 class="font-extrabold text-lg text-black uppercase tracking-wide leading-tight mb-2">${product.name}</h3>
+                        <p class="text-gray-500 text-xs font-bold uppercase tracking-wider mb-6">${product.stock} AVAILABLE</p>
+                        <div class="mt-auto flex flex-col gap-4">
+                            <span class="font-black text-2xl text-black">₹${Number(product.price).toFixed(2)}</span>
+                            <button 
+                                onclick="addToCart('${product.id}')" 
+                                class="w-full py-3 bg-black text-white font-black text-sm uppercase tracking-widest hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                                ${!canAddMore ? 'disabled' : ''}
+                            >
+                                Add To Cart
+                            </button>
+                        </div>
+                    </div>
+                `;
+                productGrid.appendChild(card);
+            });
+        }
+
+        window.addToCart = (productId) => {
+            const product = products.find(p => p.id === productId);
+            if (!product) return;
+
+            const existingItemIndex = cart.findIndex(item => item.id === productId);
+            
+            if (existingItemIndex > -1) {
+                if (cart[existingItemIndex].qty < product.stock) {
+                     cart[existingItemIndex].qty++;
+                } else {
+                     showToast("Limit reached", "warning");
+                     return;
+                }
+            } else {
+                 if(product.stock > 0) {
+                     cart.push({ ...product, qty: 1 });
+                 }
+            }
+            
+            updateCartUI();
+            openCart();
+        };
+
+        window.updateCartItemQty = (productId, delta) => {
+             const index = cart.findIndex(item => item.id === productId);
+             if(index > -1) {
+                 const product = products.find(p => p.id === productId);
+                 const newQty = cart[index].qty + delta;
+                 
+                 if (newQty <= 0) {
+                     cart.splice(index, 1);
+                 } else if (product && newQty <= product.stock) {
+                     cart[index].qty = newQty;
+                 } else {
+                     showToast("Max stock reached", "warning");
+                 }
+                 updateCartUI();
+             }
+        }
+
+        function updateCartUI() {
+            cartItemsContainer.innerHTML = '';
+            let total = 0;
+            let count = 0;
+
+            if (cart.length === 0) {
+                cartItemsContainer.innerHTML = `<div class="text-center text-gray-400 mt-10 font-bold uppercase tracking-widest text-sm">Your cart is empty</div>`;
+                document.getElementById('checkout-btn-container').classList.add('hidden');
+            } else {
+                document.getElementById('checkout-btn-container').classList.remove('hidden');
+                
+                cart = cart.filter(cartItem => {
+                    const liveProduct = products.find(p => p.id === cartItem.id);
+                    if (!liveProduct || liveProduct.stock <= 0) return false;
+                    
+                    if (cartItem.qty > liveProduct.stock) {
+                        cartItem.qty = liveProduct.stock;
+                    }
+                    return true;
+                });
+
+                cart.forEach(item => {
+                    total += (item.price * item.qty);
+                    count += item.qty;
+
+                    const el = document.createElement('div');
+                    el.className = "flex items-center gap-4 py-4 border-b border-gray-100 last:border-0";
+                    el.innerHTML = `
+                        <img src="${item.image}" alt="${item.name}" class="w-20 h-20 object-cover bg-gray-50">
+                        <div class="flex-grow">
+                            <h4 class="text-sm font-black text-black uppercase tracking-wide leading-tight">${item.name}</h4>
+                            <div class="text-sm font-bold text-gray-500 mt-1">₹${Number(item.price).toFixed(2)}</div>
+                        </div>
+                        <div class="flex items-center border border-gray-200">
+                            <button onclick="updateCartItemQty('${item.id}', -1)" class="w-8 h-8 flex items-center justify-center text-black hover:bg-gray-100 transition-colors"><i class="fas fa-minus text-xs"></i></button>
+                            <span class="w-8 text-center text-sm font-black">${item.qty}</span>
+                            <button onclick="updateCartItemQty('${item.id}', 1)" class="w-8 h-8 flex items-center justify-center text-black hover:bg-gray-100 transition-colors"><i class="fas fa-plus text-xs"></i></button>
+                        </div>
+                    `;
+                    cartItemsContainer.appendChild(el);
+                });
+            }
+
+            cartTotalEl.textContent = `₹${total.toFixed(2)}`;
+            
+            if(count > 0) {
+                cartCountEl.textContent = count;
+                cartCountEl.classList.remove('hidden');
+            } else {
+                cartCountEl.classList.add('hidden');
+            }
+            
+            renderStore();
+        }
+
+        window.openCart = () => {
+            cartSidebar.classList.add('active');
+            cartOverlay.classList.add('active');
+            document.getElementById('cart-contents-view').classList.remove('hidden');
+            document.getElementById('checkout-form-view').classList.add('hidden');
+            document.getElementById('payment-view').classList.add('hidden');
+        };
+
+        window.closeCart = () => {
+            cartSidebar.classList.remove('active');
+            cartOverlay.classList.remove('active');
+        };
+
+        window.startCheckout = () => {
+            document.getElementById('cart-contents-view').classList.add('hidden');
+            document.getElementById('checkout-form-view').classList.remove('hidden');
+        };
+
+        window.cancelCheckout = () => {
+            document.getElementById('cart-contents-view').classList.remove('hidden');
+            document.getElementById('checkout-form-view').classList.add('hidden');
+        };
+
+        checkoutForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if(!user) {
+                showToast("Connection error.", "error");
+                return;
+            }
+
+            const name = document.getElementById('customer-name').value;
+            const address = document.getElementById('customer-address').value;
+            const submitBtn = document.getElementById('place-order-btn');
+
+            if (!name || !address) return;
+
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> PROCESSING...';
+
+            try {
+                for (const item of cart) {
+                    const productRef = getProductDoc(item.id);
+                    const liveProduct = products.find(p => p.id === item.id);
+                    
+                    if (liveProduct && liveProduct.stock >= item.qty) {
+                        const newStock = liveProduct.stock - item.qty;
+                        await updateDoc(productRef, { stock: newStock });
+                    } else {
+                         throw new Error(`Insufficient stock for ${item.name}`);
+                    }
+                }
+
+                const total = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+                document.getElementById('payment-amount').textContent = `₹${total.toFixed(2)}`;
+                document.getElementById('qr-code-image').src = globalQrUrl;
+
+                document.getElementById('checkout-form-view').classList.add('hidden');
+                document.getElementById('payment-view').classList.remove('hidden');
+                
+                cart = [];
+                updateCartUI();
+                checkoutForm.reset();
+
+            } catch (error) {
+                showToast(error.message || "Error processing order.", "error");
+                updateCartUI();
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'PLACE ORDER & GET QR';
+            }
+        });
+
+        window.finishPayment = () => {
+            closeCart();
+            showToast("Order reservation complete.", "success");
+            setTimeout(() => {
+                 document.getElementById('cart-contents-view').classList.remove('hidden');
+                 document.getElementById('payment-view').classList.add('hidden');
+            }, 500);
+        }
+
+        let isAdminLoggedIn = false;
+
+        document.getElementById('secret-trigger').addEventListener('click', () => {
+            document.getElementById('admin-modal').classList.remove('hidden');
+        });
+
+        window.closeAdminLogin = () => {
+             document.getElementById('admin-modal').classList.add('hidden');
+             document.getElementById('admin-password').value = '';
+        }
+
+        window.checkAdminPassword = () => {
+            const pwd = document.getElementById('admin-password').value;
+            // The password gets injected securely by Streamlit before serving
+            const expectedPassword = '__INJECTED_ADMIN_PASSWORD__'; 
+            
+            if (pwd === expectedPassword) { 
+                isAdminLoggedIn = true;
+                closeAdminLogin();
+                showAdminPanel();
+            } else {
+                showToast("Access Denied", "error");
+            }
+        }
+
+        function showAdminPanel() {
+            storeSection.classList.add('hidden');
+            adminSection.classList.remove('hidden');
+            renderAdminList();
+            document.getElementById('admin-qr-url').value = globalQrUrl;
+        }
+
+        window.exitAdminPanel = () => {
+             isAdminLoggedIn = false;
+             storeSection.classList.remove('hidden');
+             adminSection.classList.add('hidden');
+        }
+
+        function renderAdminList() {
+            adminProductList.innerHTML = '';
+            
+            if (products.length === 0) {
+                 adminProductList.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-xs font-bold uppercase tracking-wider text-gray-400">No products found.</td></tr>`;
+                 return;
+            }
+
+            products.forEach(product => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50 border-b border-gray-100";
+                tr.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="flex items-center">
+                            <div class="flex-shrink-0 h-12 w-12 bg-gray-100">
+                                <img class="h-12 w-12 object-cover" src="${product.image || 'https://placehold.co/40'}" alt="">
+                            </div>
+                            <div class="ml-4">
+                                <div class="text-xs font-black uppercase tracking-wide text-black">${product.name}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <div class="text-sm font-bold text-black">₹${Number(product.price).toFixed(2)}</div>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <input type="number" id="stock-${product.id}" value="${product.stock}" class="w-20 px-2 py-1 border border-gray-300 text-sm font-bold text-black focus:outline-none focus:border-black" min="0">
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button onclick="updateStock('${product.id}')" class="text-black hover:text-gray-600 mr-4 font-bold uppercase tracking-wider text-xs"><i class="fas fa-save mr-1"></i> Save</button>
+                        <button onclick="deleteProduct('${product.id}')" class="text-red-600 hover:text-red-800 font-bold uppercase tracking-wider text-xs"><i class="fas fa-trash mr-1"></i> Delete</button>
+                    </td>
+                `;
+                adminProductList.appendChild(tr);
+            });
+        }
+
+        window.updateStock = async (id) => {
+            if(!user) return;
+            const input = document.getElementById(`stock-${id}`);
+            const newStock = parseInt(input.value);
+            
+            if (isNaN(newStock) || newStock < 0) return;
+
+            try {
+                const docRef = getProductDoc(id);
+                await updateDoc(docRef, { stock: newStock });
+                showToast("Stock Updated", "success");
+            } catch(e) {
+                showToast("Update Failed", "error");
+            }
+        }
+
+        window.deleteProduct = async (id) => {
+             if(!user) return;
+             if(confirm("DELETE PRODUCT: Are you sure?")) {
+                 try {
+                     const docRef = getProductDoc(id);
+                     await deleteDoc(docRef);
+                     showToast("Product Deleted", "success");
+                 } catch(e) {
+                      showToast("Delete Failed", "error");
+                 }
+             }
+        }
+
+        window.updateQrCode = async () => {
+            if(!user) return;
+            const newQrUrl = document.getElementById('admin-qr-url').value;
+            if(!newQrUrl) return;
+
+            try {
+                await setDoc(getSettingsDoc(), { qrUrl: newQrUrl }, { merge: true });
+                showToast("QR Code Updated", "success");
+            } catch(e) {
+                showToast("Update Failed", "error");
+            }
+        }
+
+        addProductForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if(!user) return;
+
+            const name = document.getElementById('new-p-name').value;
+            const price = parseFloat(document.getElementById('new-p-price').value);
+            const stock = parseInt(document.getElementById('new-p-stock').value);
+            const image = document.getElementById('new-p-img').value;
+
+            if(!name || isNaN(price) || isNaN(stock)) return;
+
+            const submitBtn = addProductForm.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+
+            try {
+                const newDocRef = doc(getProductsCollection());
+                await setDoc(newDocRef, {
+                    name,
+                    price,
+                    stock,
+                    image: image || `https://placehold.co/400x300/111111/ffffff?text=${encodeURIComponent(name)}`
+                });
+                showToast("Product Added", "success");
+                addProductForm.reset();
+            } catch(e) {
+                 showToast("Add Failed", "error");
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            const colors = {
+                success: 'bg-green-600',
+                error: 'bg-red-600',
+                warning: 'bg-yellow-500',
+                info: 'bg-black'
+            };
+            const colorClass = colors[type] || colors.info;
+            
+            toast.className = `fixed bottom-6 right-6 ${colorClass} text-white px-6 py-4 shadow-xl transform transition-all duration-300 translate-y-10 opacity-0 z-[60] flex items-center gap-3 font-bold uppercase tracking-wider text-xs`;
+            
+            let icon = 'fa-info-circle';
+            if(type === 'success') icon = 'fa-check-circle';
+            if(type === 'error') icon = 'fa-exclamation-triangle';
+            
+            toast.innerHTML = `<i class="fas ${icon} text-lg"></i> <span>${message}</span>`;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.classList.remove('translate-y-10', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initAuth();
+        });
+    </script>
+
+    <!-- Top Navigation -->
+    <nav class="bg-white sticky top-0 z-40 border-b border-gray-200 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-20 items-center">
+                <div class="flex-shrink-0 flex items-center">
+                    <span class="font-black text-2xl text-black tracking-[0.2em] uppercase">Elevar Seconds</span>
+                </div>
+                <div>
+                    <button onclick="openCart()" class="relative p-2 text-black hover:text-gray-500 transition-colors">
+                        <i class="fas fa-bag-shopping text-2xl"></i>
+                        <span id="cart-count" class="hidden absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-[10px] font-black leading-none text-white transform translate-x-1/4 -translate-y-1/4 bg-black rounded-full border-2 border-white">0</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="flex-grow bg-white">
+        <!-- Store Section -->
+        <div id="store-section" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div class="mb-10 text-center">
+                <h1 class="text-3xl font-black text-black sm:text-4xl tracking-widest uppercase">Featured Products</h1>
+                <div class="w-16 h-1 bg-black mx-auto mt-4"></div>
+            </div>
+            
+            <div id="product-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                <!-- Loader -->
+                <div class="col-span-full flex justify-center py-20">
+                    <div class="animate-spin h-10 w-10 border-4 border-black border-t-transparent rounded-full"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Admin Section -->
+        <div id="admin-section" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+            <div class="flex justify-between items-center mb-10 border-b border-black pb-4">
+                <h1 class="text-3xl font-black text-black tracking-widest uppercase">Store Dashboard</h1>
+                <button onclick="exitAdminPanel()" class="text-sm font-bold text-gray-500 hover:text-black uppercase tracking-wider"><i class="fas fa-times mr-2"></i>Exit</button>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Forms Column -->
+                <div class="lg:col-span-1 space-y-8">
+                    <div class="bg-white border border-gray-200 p-6 shadow-sm">
+                        <h2 class="text-sm font-black mb-5 uppercase tracking-widest text-black">Add New Product</h2>
+                        <form id="add-product-form" class="space-y-5">
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Name</label>
+                                <input type="text" id="new-p-name" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Price (₹)</label>
+                                    <input type="number" id="new-p-price" step="0.01" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Initial Stock</label>
+                                    <input type="number" id="new-p-stock" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Image URL</label>
+                                <input type="url" id="new-p-img" placeholder="https://..." class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                            </div>
+                            <button type="submit" class="w-full py-4 text-xs font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                                Publish Product
+                            </button>
+                        </form>
+                    </div>
+
+                    <div class="bg-white border border-gray-200 p-6 shadow-sm">
+                        <h2 class="text-sm font-black mb-5 uppercase tracking-widest text-black">Payment Settings</h2>
+                        <div class="space-y-5">
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Store QR Image URL</label>
+                                <input type="url" id="admin-qr-url" placeholder="https://..." class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                            </div>
+                            <button onclick="updateQrCode()" class="w-full py-4 text-xs font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                                Update QR Image
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inventory Management -->
+                <div class="lg:col-span-2">
+                    <div class="bg-white border border-gray-200 shadow-sm overflow-hidden">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-black">
+                                <tr>
+                                    <th scope="col" class="px-6 py-4 text-left text-xs font-black text-white uppercase tracking-widest">Product</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-xs font-black text-white uppercase tracking-widest">Price</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-xs font-black text-white uppercase tracking-widest">Stock</th>
+                                    <th scope="col" class="px-6 py-4 text-right text-xs font-black text-white uppercase tracking-widest">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="admin-product-list" class="bg-white divide-y divide-gray-200">
+                                <!-- Admin items rendered here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <!-- Cart Overlay -->
+    <div id="cart-overlay" class="fixed inset-0 bg-black bg-opacity-60 fade-in z-40 backdrop-blur-sm" onclick="closeCart()"></div>
+    
+    <!-- Cart Sidebar -->
+    <div id="cart-sidebar" class="fixed inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl z-50 flex flex-col slide-in-right">
+        
+        <!-- Cart Header -->
+        <div class="px-6 py-6 border-b border-gray-200 flex items-center justify-between bg-white">
+            <h2 class="text-xl font-black text-black tracking-widest uppercase">Your Cart</h2>
+            <button onclick="closeCart()" class="text-black hover:text-gray-500 transition-colors">
+                <i class="fas fa-times text-2xl"></i>
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto relative p-6 bg-gray-50">
+            <!-- View 1: Cart Items -->
+            <div id="cart-contents-view" class="h-full flex flex-col">
+                <div id="cart-items" class="flex-1 overflow-y-auto pr-2 pb-4">
+                    <!-- Items injected here -->
+                </div>
+                
+                <div id="checkout-btn-container" class="mt-auto border-t border-gray-200 pt-6 hidden">
+                    <div class="flex justify-between text-lg font-black text-black mb-6 uppercase tracking-widest">
+                        <p>Total</p>
+                        <p id="cart-total">₹0.00</p>
+                    </div>
+                    <button onclick="startCheckout()" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                        Proceed to Checkout
+                    </button>
+                </div>
+            </div>
+
+            <!-- View 2: Checkout Form -->
+            <div id="checkout-form-view" class="hidden h-full flex flex-col">
+                <button onclick="cancelCheckout()" class="text-xs font-bold text-gray-500 hover:text-black uppercase tracking-wider mb-6 flex items-center gap-2"><i class="fas fa-arrow-left"></i> Back to Cart</button>
+                
+                <h3 class="text-2xl font-black text-black uppercase tracking-widest mb-2">Reservation</h3>
+                <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-8 leading-relaxed">Enter details to reserve items and reveal payment QR. Stock will be held temporarily.</p>
+                
+                <form id="checkout-form" class="space-y-6 flex-1">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Full Name</label>
+                        <input type="text" id="customer-name" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Delivery Address</label>
+                        <textarea id="customer-address" rows="4" required class="block w-full border border-gray-300 py-3 px-3 text-sm focus:outline-none focus:border-black focus:ring-1 focus:ring-black"></textarea>
+                    </div>
+                    
+                    <div class="pt-6">
+                        <button type="submit" id="place-order-btn" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                            Place Order & Get QR
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- View 3: Payment -->
+            <div id="payment-view" class="hidden h-full flex flex-col items-center justify-center text-center">
+                <div class="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mb-6 text-green-600 text-3xl">
+                    <i class="fas fa-check"></i>
+                </div>
+                <h3 class="text-2xl font-black text-black uppercase tracking-widest mb-2">Reserved</h3>
+                <p class="text-sm font-bold text-gray-500 uppercase tracking-wider mb-8">Scan & transfer <strong id="payment-amount" class="text-black"></strong></p>
+                
+                <div class="bg-white p-6 border-2 border-black mb-8">
+                    <img id="qr-code-image" src="" alt="Payment QR Code" class="w-56 h-56 mx-auto">
+                </div>
+                
+                <p class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-8 max-w-xs leading-relaxed">Stock deducted. Send payment screenshot to support to finalize your order.</p>
+                
+                <button onclick="finishPayment()" class="w-full py-4 text-sm font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">
+                    Done
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Login Modal -->
+    <div id="admin-modal" class="fixed inset-0 bg-black bg-opacity-70 hidden z-50 flex items-center justify-center backdrop-blur-sm">
+        <div class="bg-white p-8 max-w-sm w-full mx-4 border-2 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+            <h3 class="text-xl font-black text-black uppercase tracking-widest mb-2">System Access</h3>
+            <p class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-6">Enter administrative password.</p>
+            <input type="password" id="admin-password" class="w-full border border-gray-300 py-3 px-3 text-center tracking-[0.3em] font-black focus:outline-none focus:border-black mb-6" placeholder="•••">
+            <div class="flex flex-col gap-3">
+                <button onclick="checkAdminPassword()" class="w-full py-3 text-xs font-black text-white bg-black hover:bg-gray-800 uppercase tracking-widest transition-colors">Authorize</button>
+                <button onclick="closeAdminLogin()" class="w-full py-3 text-xs font-black text-black bg-gray-100 hover:bg-gray-200 uppercase tracking-widest transition-colors">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="secret-trigger" title="Admin"></div>
+</body>
+</html>
